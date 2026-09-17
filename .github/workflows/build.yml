@@ -1,0 +1,46 @@
+name: Build APK
+
+# Otomatis jalan tiap kali kode di-push ke branch main.
+# Bisa juga dijalankan manual dari tab "Actions" di GitHub.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      # Proyek ini SENGAJA tidak menyertakan gradlew/gradle-wrapper.jar
+      # (file biner yang tidak bisa dibuat otomatis tanpa akses internet).
+      # Sebagai gantinya, action ini yang install Gradle langsung di
+      # server GitHub - hasil akhirnya sama saja buat kamu.
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
+      - name: Build APK (debug - buat testing dulu)
+        run: gradle assembleDebug
+
+      - name: Upload APK hasil build
+        uses: actions/upload-artifact@v4
+        with:
+          name: aquarium-app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+
+# CATATAN:
+# - Hasil build (APK) bisa didownload dari tab "Actions" di repo GitHub
+#   kamu, klik run terakhir, scroll ke bawah ke bagian "Artifacts".
+# - Ini masih build DEBUG (buat testing), belum yang final buat Play
+#   Store. Buat Play Store nanti butuh AAB yang SUDAH ditandatangani
+#   (signed) - itu perlu keystore, jangan disimpan di repo publik.
