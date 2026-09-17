@@ -1,44 +1,58 @@
 package com.gentlefin.aquarium
 
 import android.annotation.SuppressLint
+import android.graphics.Color
 import android.os.Bundle
+import android.util.Log
+import android.view.Gravity
 import android.view.View
+import android.webkit.ConsoleMessage
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.FrameLayout
+import android.widget.ScrollView
+import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import androidx.webkit.WebViewAssetLoader
+import java.io.PrintWriter
+import java.io.StringWriter
 
-/**
- * App biasa (bukan wallpaper) - WebView di dalam Activity normal.
- * Ini JAUH lebih stabil dibanding pendekatan WallpaperService yang
- * kemarin gagal, karena WebView di sini benar2 attached ke window
- * sungguhan, jadi WebGL/Three.js bisa bikin context dgn normal -
- * sama persis kondisinya kayak waktu kamu buka situs Netlify di
- * browser (yang sudah terbukti lancar 2+ menit tanpa masalah).
- *
- * CATATAN: index.html ini pakai <script type="module"> (import Three.js
- * dkk). Browser/WebView MEMBLOKIR loading module script lewat file://
- * (ini persis error "[ERROR] Access to script blocked" yang muncul di
- * proyek wallpaper kemarin). Makanya di sini dipakai WebViewAssetLoader
- * (cara resmi dari Google) yang menyajikan folder assets/ lewat alamat
- * https://appassets.androidplatform.net/ secara lokal - jadi dianggap
- * browser sebagai origin https biasa, bukan file://, tanpa perlu internet
- * sungguhan (semua tetap diambil dari dalam APK).
- */
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
+    private lateinit var errorText: TextView
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Fullscreen, sembunyikan status bar & nav bar spy pengalaman
-        // main lebih immersive (opsional, bisa dihapus kalau tidak mau).
+        Thread.setDefaultUncaughtExceptionHandler { _, throwable ->
+            try {
+                val sw = StringWriter()
+                throwable.printStackTrace(PrintWriter(sw))
+                runOnUiThread {
+                    showError("[CRASH] ${sw}")
+                }
+                Thread.sleep(15000)
+            } catch (e: Exception) {
+            }
+        }
+
+        try {
+            setupUi()
+        } catch (t: Throwable) {
+            val sw = StringWriter()
+            t.printStackTrace(PrintWriter(sw))
+            setContentView(buildErrorOnlyView("[CRASH SAAT SETUP] ${sw}"))
+        }
+    }
+
+    private fun setupUi() {
         window.decorView.systemUiVisibility = (
             View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
@@ -48,18 +62,51 @@ class MainActivity : AppCompatActivity() {
             or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
         )
 
+        val root = FrameLayout(this)
+
         val assetLoader = WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
 
         webView = WebView(this)
-        setContentView(webView)
+        root.addView(
+            webView,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT)
+        )
+
+        val scroll = ScrollView(this)
+        errorText = TextView(this).apply {
+            setTextColor(Color.YELLOW)
+            setBackgroundColor(Color.argb(220, 0, 0, 0))
+            textSize = 11f
+            setPadding(16, 16, 16, 16)
+            text = ""
+        }
+        scroll.addView(errorText)
+        root.addView(
+            scroll,
+            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
+                gravity = Gravity.TOP
+            }
+        )
+
+        setContentView(root)
 
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
             mediaPlaybackRequiresUserGesture = false
             setRenderPriority(WebSettings.RenderPriority.HIGH)
+        }
+
+        webView.webChromeClient = object : WebChromeClient() {
+            override fun onConsoleMessage(cm: ConsoleMessage): Boolean {
+                Log.d("GentlefinWeb", "${cm.messageLevel()}: ${cm.message()} (baris ${cm.lineNumber()})")
+                if (cm.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                    showError("[JS-ERROR] ${cm.message()} (baris ${cm.lineNumber()})")
+                }
+                return true
+            }
         }
 
         webView.webViewClient = object : WebViewClient() {
@@ -69,36 +116,65 @@ class MainActivity : AppCompatActivity() {
             ): WebResourceResponse? {
                 return assetLoader.shouldInterceptRequest(request.url)
             }
-        }
-        webView.webChromeClient = WebChromeClient() // wajib utk console.log & beberapa fitur WebGL
 
-        // index.html = salinan skrip akuarium (Gfv9.html), sudah tanpa
-        // guardedGlbUrl - lihat catatan di ASET_YANG_HARUS_DITAMBAH.md
+            override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: WebResourceError
+            ) {
+                super.onReceivedError(view, request, error)
+                showError("[LOAD-FAIL] ${request.url} -> ${error.description}")
+            }
+        }
+
         webView.loadUrl("https://appassets.androidplatform.net/assets/index.html")
+    }
+
+    private fun showError(msg: String) {
+        if (::errorText.isInitialized) {
+            errorText.append(msg + "\n\n")
+        }
+    }
+
+    private fun buildErrorOnlyView(msg: String): View {
+        val scroll = ScrollView(this)
+        val tv = TextView(this).apply {
+            setTextColor(Color.YELLOW)
+            setBackgroundColor(Color.BLACK)
+            textSize = 12f
+            setPadding(24, 24, 24, 24)
+            text = msg
+        }
+        scroll.addView(tv)
+        return scroll
     }
 
     override fun onPause() {
         super.onPause()
-        webView.onPause()
-        webView.pauseTimers()
+        if (::webView.isInitialized) {
+            webView.onPause()
+            webView.pauseTimers()
+        }
     }
 
     override fun onResume() {
         super.onResume()
-        webView.onResume()
-        webView.resumeTimers()
+        if (::webView.isInitialized) {
+            webView.onResume()
+            webView.resumeTimers()
+        }
     }
 
     override fun onDestroy() {
-        webView.destroy()
+        if (::webView.isInitialized) {
+            webView.destroy()
+        }
         super.onDestroy()
     }
 
     @Deprecated("Deprecated in Java", ReplaceWith("onBackPressedDispatcher"))
     override fun onBackPressed() {
-        // Kalau ada history navigasi di dalam WebView, mundur dulu;
-        // kalau tidak ada, baru keluar app spt biasa.
-        if (webView.canGoBack()) {
+        if (::webView.isInitialized && webView.canGoBack()) {
             webView.goBack()
         } else {
             super.onBackPressed()
